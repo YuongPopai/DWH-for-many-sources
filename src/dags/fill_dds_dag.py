@@ -11,7 +11,6 @@ from typing import Any, Dict
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-
 def json2str(obj: Any) -> str:
     return json.dumps(to_dict(obj), sort_keys=True, ensure_ascii=False)
 
@@ -30,26 +29,25 @@ def to_dict(obj):
         return [to_dict(v) for v in obj]
     else:
         return obj
-    
-def load_restaurants(**kwargs):
+
+def get_connection():
     target_conn_id = 'PG_WAREHOUSE_CONNECTION'
     pg_conn = BaseHook.get_connection(target_conn_id)
+    return psycopg2.connect(pg_conn.get_uri(), cursor_factory=RealDictCursor)
 
+def load_restaurants(**kwargs):
     try:
-        with psycopg2.connect(pg_conn.get_uri()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute('''SELECT object_value
-                                FROM stg.ordersystem_restaurants
-                                union
-                                select object_value from stg.api_restaurants;''')
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute('''SELECT object_value FROM stg.ordersystem_restaurants UNION SELECT object_value FROM stg.api_restaurants;''')
                 rows = cursor.fetchall()
-                
+
                 for row in rows:
                     restaurant_data = str2json(row['object_value'])
 
                     restaurant_id = restaurant_data.get('_id')
                     restaurant_name = restaurant_data.get('name')
-                    active_from = active_from = datetime.now()
+                    active_from = datetime.now()
                     active_to = datetime(2099, 12, 31, 0, 0, 0) 
 
                     cursor.execute(
@@ -67,21 +65,18 @@ def load_restaurants(**kwargs):
                 
                 conn.commit()
                 log.info(f"Загружено {len(rows)} записей")
-
+    
     except Exception as e:
         log.error(f"Ошибка при загрузке ресторанов: {e}")
         raise
-def load_users(**kwargs):
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    pg_conn = BaseHook.get_connection(target_conn_id)
 
+def load_users(**kwargs):
     try:
-        with psycopg2.connect(pg_conn.get_uri()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
                 cursor.execute("SELECT object_value FROM stg.ordersystem_users;")
                 rows = cursor.fetchall()
 
-                
                 for row in rows:
                     user_data = str2json(row['object_value'])
 
@@ -95,28 +90,26 @@ def load_users(**kwargs):
                         VALUES (%s, %s, %s)
                         ON CONFLICT (user_id) DO UPDATE
                         SET 
-                        user_name = EXCLUDED.user_name,
-                        user_login = EXCLUDED.user_login;
+                            user_name = EXCLUDED.user_name,
+                            user_login = EXCLUDED.user_login;
                         """,
                         (user_id, user_name, user_login)
                     )
                 
                 conn.commit()
                 log.info(f"Загружено {len(rows)} записей")
-
+    
     except Exception as e:
         log.error(f"Ошибка при загрузке пользователей: {e}")
         raise
-def load_curiers(**kwargs):
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    pg_conn = BaseHook.get_connection(target_conn_id)
 
+def load_curiers(**kwargs):
     try:
-        with psycopg2.connect(pg_conn.get_uri()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
                 cursor.execute('''SELECT object_value FROM stg.api_couriers;''')
                 rows = cursor.fetchall()
-                
+
                 for row in rows:
                     curier_data = str2json(row['object_value'])
 
@@ -134,20 +127,17 @@ def load_curiers(**kwargs):
                 
                 conn.commit()
                 log.info(f"Загружено {len(rows)} записей")
-
+    
     except Exception as e:
         log.error(f"Ошибка при загрузке курьеров: {e}")
         raise
 def load_timestamps(**kwargs):
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    pg_conn = BaseHook.get_connection(target_conn_id)
-
     try:
-        with psycopg2.connect(pg_conn.get_uri()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
                 cursor.execute("SELECT object_value FROM stg.ordersystem_orders;")
                 rows = cursor.fetchall()
-                
+
                 for row in rows:
                     order_data = str2json(row['object_value'])
                     
@@ -171,22 +161,22 @@ def load_timestamps(**kwargs):
                 
                 conn.commit()
                 log.info(f"Загружено {len(rows)} записей")
-
+    
     except Exception as e:
         log.error(f"Ошибка при загрузке временных меток: {e}")
         raise
-def load_products(**kwargs):
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    pg_conn = BaseHook.get_connection(target_conn_id)
 
+def load_products(**kwargs):
     try:
-        with psycopg2.connect(pg_conn.get_uri()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
                 cursor.execute("SELECT id, restaurant_id FROM dds.dm_restaurants;")
                 restaurant_rows = cursor.fetchall()
                 restaurant_mapping = {row['restaurant_id']: row['id'] for row in restaurant_rows}   
+                
                 cursor.execute("SELECT object_value, update_ts FROM stg.ordersystem_restaurants;")
                 product_rows = cursor.fetchall()
+                
                 for row in product_rows:
                     restaurant_data = str2json(row['object_value'])
                     update_ts = row['update_ts']
@@ -208,24 +198,22 @@ def load_products(**kwargs):
                             """
                             INSERT INTO dds.dm_products (restaurant_id, product_id, product_name, product_price, active_from, active_to)
                             VALUES (%s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (product_name,restaurant_id) DO NOTHING;
+                            ON CONFLICT (product_name, restaurant_id) DO NOTHING;
                             """,
                             (restaurant_id, product_id, product_name, product_price, active_from, active_to)
                         )
                 
                 conn.commit()
-
+                log.info(f"Загружено {len(product_rows)} записей")
+    
     except Exception as e:
         log.error(f"Ошибка при загрузке продуктов: {e}")
         raise
-def load_orders(**kwargs):
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    pg_conn = BaseHook.get_connection(target_conn_id)
 
+def load_orders(**kwargs):
     try:
-        with psycopg2.connect(pg_conn.get_uri()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
                 cursor.execute("SELECT object_value, update_ts FROM stg.ordersystem_orders;")
                 order_rows = cursor.fetchall()
 
@@ -271,18 +259,16 @@ def load_orders(**kwargs):
                     )
                 
                 conn.commit()
-
+                log.info(f"Загружено {len(order_rows)} записей")
+    
     except Exception as e:
         log.error(f"Ошибка при загрузке заказов: {e}")
         raise
-def load_product_sales(**kwargs):
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    pg_conn = BaseHook.get_connection(target_conn_id)
 
+def load_product_sales(**kwargs):
     try:
-        with psycopg2.connect(pg_conn.get_uri()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
                 cursor.execute("SELECT object_value FROM stg.ordersystem_orders;")
                 order_rows = cursor.fetchall()
 
@@ -301,7 +287,6 @@ def load_product_sales(**kwargs):
                     order_id = order_id_row['id'] if order_id_row else None
 
                     if order_id is None:
-
                         continue
 
                     for item in order_items:
@@ -328,19 +313,18 @@ def load_product_sales(**kwargs):
                             """,
                             (product_id, order_id, count, price, total_sum, bonus_payment, bonus_grant)
                         )
-                
+
                 conn.commit()
+                log.info(f"Загружено {len(order_rows)} записей")
 
     except Exception as e:
         log.error(f"Ошибка при загрузке данных по продажам продуктов: {e}")
         raise
-def load_delivers(**kwargs):
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    pg_conn = BaseHook.get_connection(target_conn_id)
 
+def load_delivers(**kwargs):
     try:
-        with psycopg2.connect(pg_conn.get_uri()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
                 cursor.execute('''SELECT object_value FROM stg.api_delivers;''')
                 rows = cursor.fetchall()
                 
@@ -386,11 +370,13 @@ def load_delivers(**kwargs):
     except Exception as e:
         log.error(f"Ошибка при загрузке доставок: {e}")
         raise
+
 dag = DAG(
     dag_id='fill_dds_dag',
     schedule_interval='0/15 * * * *',
     start_date=datetime(2024, 11, 21),
 )
+
 load_product_sales_task = PythonOperator(
     task_id='load_product_sales',
     python_callable=load_product_sales,
@@ -433,5 +419,6 @@ load_delivers_task = PythonOperator(
     python_callable=load_delivers,
     dag=dag,
 )
+
 
 [load_restaurants_task, load_users_task, load_timestamps_task, load_curiers_task] >> load_products_task >> load_orders_task >> [load_product_sales_task, load_delivers_task]

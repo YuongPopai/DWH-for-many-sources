@@ -14,13 +14,10 @@ from datetime import datetime, timedelta
 import requests
 from pymongo.collection import Collection
 
-
-
 API_BASE_URL = 'https://d5d04q7d963eapoepsqr.apigw.yandexcloud.net'
 NICKNAME = 'NIKITOSIK'  
 COHORT_NUMBER = '26'  
 API_KEY = '25c27781-8fde-4b30-a22e-524044a7580f'  
-
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -41,6 +38,21 @@ class MongoConnect:
     def client(self) -> Collection:
         return MongoClient(self.url(), tlsCAFile=self.cert_path)[self.main_db]
 
+def get_mongo_connection():
+    cert_path = Variable.get("MONGO_DB_CERTIFICATE_PATH")
+    db_user = Variable.get("MONGO_DB_USER")
+    db_pw = Variable.get("MONGO_DB_PASSWORD")
+    rs = Variable.get("MONGO_DB_REPLICA_SET")
+    db = Variable.get("MONGO_DB_DATABASE_NAME")
+    host = Variable.get("MONGO_DB_HOST")
+    
+    mongo_connect = MongoConnect(cert_path, db_user, db_pw, host, rs, db, db)
+    return mongo_connect.client()
+
+def get_postgres_connection(target_conn_id):
+    target_conn = BaseHook.get_connection(target_conn_id)
+    return psycopg2.connect(target_conn.get_uri())
+
 def serialize_mongo_object(mongo_obj):
     if isinstance(mongo_obj, ObjectId):
         return str(mongo_obj)
@@ -53,22 +65,10 @@ def serialize_mongo_object(mongo_obj):
     return mongo_obj
 
 def load_and_save_orders(**kwargs):
-    cert_path = Variable.get("MONGO_DB_CERTIFICATE_PATH")
-    db_user = Variable.get("MONGO_DB_USER")
-    db_pw = Variable.get("MONGO_DB_PASSWORD")
-    rs = Variable.get("MONGO_DB_REPLICA_SET")
-    db = Variable.get("MONGO_DB_DATABASE_NAME")
-    host = Variable.get("MONGO_DB_HOST")
-
-    mongo_connect = MongoConnect(cert_path, db_user, db_pw, host, rs, db, db)
-    orders_collection = mongo_connect.client().orders
-
+    orders_collection = get_mongo_connection().orders
     orders = list(orders_collection.find({}))
 
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    target_conn = BaseHook.get_connection(target_conn_id)
-
-    with psycopg2.connect(target_conn.get_uri()) as conn:
+    with get_postgres_connection('PG_WAREHOUSE_CONNECTION') as conn:
         with conn.cursor() as cursor:
             cursor.execute('''
                 SELECT workflow_settings
@@ -88,7 +88,6 @@ def load_and_save_orders(**kwargs):
             last_loaded_ts_str = workflow_settings.get("last_loaded_ts")
             if last_loaded_ts_str and last_loaded_ts_str.lower() != "null":
                 last_loaded_ts = datetime.fromisoformat(last_loaded_ts_str)
-
 
             for order in orders:
                 object_id = str(order['_id'])  
@@ -126,23 +125,10 @@ def load_and_save_orders(**kwargs):
                 ''', (json.dumps(new_workflow_settings),))
 
 def load_and_save_restaurants(**kwargs):
-    cert_path = Variable.get("MONGO_DB_CERTIFICATE_PATH")
-    db_user = Variable.get("MONGO_DB_USER")
-    db_pw = Variable.get("MONGO_DB_PASSWORD")
-    rs = Variable.get("MONGO_DB_REPLICA_SET")
-    db = Variable.get("MONGO_DB_DATABASE_NAME")
-    host = Variable.get("MONGO_DB_HOST")
-
-    mongo_connect = MongoConnect(cert_path, db_user, db_pw, host, rs, db, db)
-    restaurants_collection = mongo_connect.client().restaurants
-
+    restaurants_collection = get_mongo_connection().restaurants
     restaurants = list(restaurants_collection.find({}))
 
-
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    target_conn = BaseHook.get_connection(target_conn_id)
-
-    with psycopg2.connect(target_conn.get_uri()) as conn:
+    with get_postgres_connection('PG_WAREHOUSE_CONNECTION') as conn:
         with conn.cursor() as cursor:
             cursor.execute('''
                 SELECT workflow_settings
@@ -162,7 +148,6 @@ def load_and_save_restaurants(**kwargs):
             last_loaded_ts_str = workflow_settings.get("last_loaded_ts")  
             if last_loaded_ts_str and last_loaded_ts_str.lower() != "null": 
                 last_loaded_ts = datetime.fromisoformat(last_loaded_ts_str)
-
 
             last_restaurant_update_ts = None
 
@@ -203,22 +188,10 @@ def load_and_save_restaurants(**kwargs):
                 ''', (json.dumps(new_workflow_settings),))
 
 def load_and_save_users(**kwargs):
-    cert_path = Variable.get("MONGO_DB_CERTIFICATE_PATH")
-    db_user = Variable.get("MONGO_DB_USER")
-    db_pw = Variable.get("MONGO_DB_PASSWORD")
-    rs = Variable.get("MONGO_DB_REPLICA_SET")
-    db = Variable.get("MONGO_DB_DATABASE_NAME")
-    host = Variable.get("MONGO_DB_HOST")
-
-    mongo_connect = MongoConnect(cert_path, db_user, db_pw, host, rs, db, db)
-    users_collection = mongo_connect.client().users
-
+    users_collection = get_mongo_connection().users
     users = list(users_collection.find({}))
 
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    target_conn = BaseHook.get_connection(target_conn_id)
-
-    with psycopg2.connect(target_conn.get_uri()) as conn:
+    with get_postgres_connection('PG_WAREHOUSE_CONNECTION') as conn:
         with conn.cursor() as cursor:
             cursor.execute('''
                 SELECT workflow_settings
@@ -274,52 +247,43 @@ def load_and_save_users(**kwargs):
                     WHERE workflow_key = 'origin_to_stg_users';
                 ''', (json.dumps(new_workflow_settings),))
 
-
 def load_events(**kwargs):
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    source_conn = BaseHook.get_connection(target_conn_id)
-
-    with psycopg2.connect(source_conn.get_uri()) as src_conn:
-        with src_conn.cursor(cursor_factory=RealDictCursor) as src_cursor:
-            src_cursor.execute('''
+    with get_postgres_connection('PG_WAREHOUSE_CONNECTION') as conn:
+        with conn.cursor() as cursor:
+            cursor.execute('''
                 SELECT MAX(data::int) FROM (
                     SELECT (workflow_settings::JSON->>'last_loaded_id') AS data 
                     FROM stg.srv_wf_settings
                     where workflow_key = %s
                 ) t1;
             ''', ['save_last_id'])
-            result = src_cursor.fetchone()
+            result = cursor.fetchone()
             max_id = result['max']
-            src_cursor.execute(f'SELECT * FROM public.outbox WHERE object_id > %s;', (max_id,))
-            rows = src_cursor.fetchall()
+            cursor.execute(f'SELECT * FROM public.outbox WHERE object_id > %s;', (max_id,))
+            rows = cursor.fetchall()
 
             for row in rows:
-                src_cursor.execute('''INSERT INTO stg.bonussystem_events(id, event_ts, event_type, event_value)
+                cursor.execute('''INSERT INTO stg.bonussystem_events(id, event_ts, event_type, event_value)
                     VALUES (%s, %s, %s, %s);''', 
                     (row['object_id'], row['record_ts'], row['type'], row['payload']))
             
-            src_cursor.execute('SELECT MAX(id) FROM stg.bonussystem_events;')
-            max_id = src_cursor.fetchone()['max']
+            cursor.execute('SELECT MAX(id) FROM stg.bonussystem_events;')
+            max_id = cursor.fetchone()['max']
             
-            src_cursor.execute('''UPDATE stg.srv_wf_settings
+            cursor.execute('''UPDATE stg.srv_wf_settings
                 SET workflow_settings = jsonb_set(workflow_settings::jsonb, '{last_loaded_id}', %s::jsonb)
                 WHERE workflow_key = 'example_ranks_origin_to_stg_workflow';''', (json.dumps(max_id),))
 def load_ranks(**kwargs):
-    source_conn_id = 'PG_ORIGIN_BONUS_SYSTEM_CONNECTION'
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    source_conn = BaseHook.get_connection(source_conn_id)
-    target_conn = BaseHook.get_connection(target_conn_id)
-
     try:
-        with psycopg2.connect(source_conn.get_uri()) as src_conn:
-            with src_conn.cursor(cursor_factory=RealDictCursor) as src_cursor:
-                src_cursor.execute("SELECT * FROM public.ranks;")
-                ranks_rows = src_cursor.fetchall()
+        with get_postgres_connection('PG_ORIGIN_BONUS_SYSTEM_CONNECTION') as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM public.ranks;")
+                ranks_rows = cursor.fetchall()
 
-        with psycopg2.connect(target_conn.get_uri()) as tgt_conn:
-            with tgt_conn.cursor() as tgt_cursor:
+        with get_postgres_connection('PG_WAREHOUSE_CONNECTION') as conn:
+            with conn.cursor() as cursor:
                 for row in ranks_rows:
-                    tgt_cursor.execute(
+                    cursor.execute(
                         """
                         INSERT INTO stg.bonussystem_ranks (id, name, bonus_percent, min_payment_threshold)
                         VALUES (%s, %s, %s, %s)
@@ -332,7 +296,7 @@ def load_ranks(**kwargs):
                         (row['id'], row['name'], row['bonus_percent'], row['min_payment_threshold'])
                     )
                 log.info(f"Загружено {len(ranks_rows)} записей")
-                tgt_conn.commit()  
+                conn.commit()  
 
     except Exception as e:
         log.error(f"Ошибка при загрузке данных: {e}")
@@ -370,200 +334,151 @@ def load_users(**kwargs):
     except Exception as e:
         log.error(f"Ошибка при загрузке данных: {e}")
         raise
-def load_api_couriers(**kwargs): 
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    pg_conn = BaseHook.get_connection(target_conn_id)
-    conn = psycopg2.connect(
-        host=pg_conn.host,
-        port=pg_conn.port,
-        database=pg_conn.schema,
-        user=pg_conn.login,
-        password=pg_conn.password
-    )
-    cursor = conn.cursor()
 
-    def get_couriers(sort_field='id', sort_direction='asc', limit=50, offset=50):
-        url = f'{API_BASE_URL}/couriers'
-        
-        params = {
-            'sort_field': sort_field,
-            'sort_direction': sort_direction,
-            'limit': limit,
-            'offset': offset
-        }
-        
-        headers = {
-            'X-Nickname': NICKNAME,
-            'X-Cohort': COHORT_NUMBER,
-            'X-API-KEY': API_KEY,
-        }
 
-        response = requests.get(url, headers=headers, params=params)
+def get_postgres_connection(target_conn_id):
+    target_conn = BaseHook.get_connection(target_conn_id)
+    return psycopg2.connect(target_conn.get_uri())
 
-        if response.status_code == 200:
-            return response.json()  
-        else:
-            logging.error(f'Ошибка {response.status_code}: {response.text}') 
-            return []
+def get_couriers(sort_field='id', sort_direction='asc', limit=50, offset=0):
+    url = f'{API_BASE_URL}/couriers'
+    params = {
+        'sort_field': sort_field,
+        'sort_direction': sort_direction,
+        'limit': limit,
+        'offset': offset
+    }
+    headers = {
+        'X-Nickname': NICKNAME,
+        'X-Cohort': COHORT_NUMBER,
+        'X-API-KEY': API_KEY,
+    }
 
-    offset = 0
-    while True:
-        couriers = get_couriers(limit=50, offset=offset)
-        if not couriers:
-            break 
-        
-        for item in couriers:
-            object_id = item['_id']
-            if 'name' in item:
-                decoded_name = item['name'] 
-                item['name'] = decoded_name
-            
-            object_value = json.dumps(item, ensure_ascii=False)  
-            
-            cursor.execute(
-                """
-                INSERT INTO stg.api_couriers (object_id, object_value)
-                VALUES (%s, %s)
-                ON CONFLICT (object_id) DO NOTHING;  
-                """,
-                (object_id, object_value)
-            )
-        
-        conn.commit()  
-        offset += 50 
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        log.error(f'Ошибка {response.status_code}: {response.text}')
+        return []
 
-    cursor.close()
-    conn.close()
+def load_api_couriers(**kwargs):
+    with get_postgres_connection('PG_WAREHOUSE_CONNECTION') as conn:
+        with conn.cursor() as cursor:
+            offset = 0
+            while True:
+                couriers = get_couriers(limit=50, offset=offset)
+                if not couriers:
+                    break
+                
+                for item in couriers:
+                    object_id = item['_id']
+                    item['name'] = item.get('name')  # Assuming further processing on the name is unnecessary
+                
+                    object_value = json.dumps(item, ensure_ascii=False)
+                    cursor.execute(
+                        """
+                        INSERT INTO stg.api_couriers (object_id, object_value)
+                        VALUES (%s, %s)
+                        ON CONFLICT (object_id) DO NOTHING;
+                        """,
+                        (object_id, object_value)
+                    )
+                conn.commit()
+                offset += 50
+
+def get_restaurants(sort_field='id', sort_direction='asc', limit=50, offset=0):
+    url = f'{API_BASE_URL}/restaurants'
+    params = {
+        'sort_field': sort_field,
+        'sort_direction': sort_direction,
+        'limit': limit,
+        'offset': offset
+    }
+    headers = {
+        'X-Nickname': NICKNAME,
+        'X-Cohort': COHORT_NUMBER,
+        'X-API-KEY': API_KEY,
+    }
+
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        log.error(f'Ошибка {response.status_code}: {response.text}')
+        return []
 
 def load_api_restaurants(**kwargs):
+    with get_postgres_connection('PG_WAREHOUSE_CONNECTION') as conn:
+        with conn.cursor() as cursor:
+            offset = 0
+            while True:
+                restaurants = get_restaurants(limit=50, offset=offset)
+                if not restaurants:
+                    break
 
-    
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    pg_conn = BaseHook.get_connection(target_conn_id)
-    conn = psycopg2.connect(
-        host=pg_conn.host,
-        port=pg_conn.port,
-        database=pg_conn.schema,
-        user=pg_conn.login,
-        password=pg_conn.password
-    )
-    cursor = conn.cursor()
-    
-    def get_restaurants(sort_field='id', sort_direction='asc', limit=50, offset=50):
-        url = f'{API_BASE_URL}/restaurants'
-        
-        params = {
-            'sort_field': sort_field,
-            'sort_direction': sort_direction,
-            'limit': limit,
-            'offset': offset
-        }
-        
-        headers = {
-            'X-Nickname': NICKNAME,
-            'X-Cohort': COHORT_NUMBER,
-            'X-API-KEY': API_KEY,
-        }
+                for item in restaurants:
+                    object_id = item['_id']
+                    object_value = json.dumps(item, ensure_ascii=False)
 
-        response = requests.get(url, headers=headers, params=params)
+                    cursor.execute(
+                        """
+                        INSERT INTO stg.api_restaurants (object_id, object_value)
+                        VALUES (%s, %s)
+                        ON CONFLICT (object_id) DO NOTHING;
+                        """,
+                        (object_id, object_value)
+                    )
+                conn.commit()
+                offset += 50
 
-        if response.status_code == 200:
-            return response.json()  
-        else:
-            logging.error(f'Ошибка {response.status_code}: {response.text}') 
-            return []
+def get_deliveries(from_date, sort_field='_id', sort_direction='asc', limit=50, offset=0):
+    url = f'{API_BASE_URL}/deliveries'
+    params = {
+        'from': from_date,
+        'sort_field': sort_field,
+        'sort_direction': sort_direction,
+        'limit': limit,
+        'offset': offset
+    }
+    headers = {
+        'X-Nickname': NICKNAME,
+        'X-Cohort': COHORT_NUMBER,
+        'X-API-KEY': API_KEY,
+    }
 
-    offset = 50
-    while True:
-        restaurants = get_restaurants(limit=50, offset=offset)
-        if not restaurants:
-            break 
-        
-        for item in restaurants:
-            object_id = item['_id']
-            decoded_name = item['name'] if 'name' in item else None
-            
-            object_value = json.dumps(item, ensure_ascii=False) 
-            
-            cursor.execute(
-                """
-                INSERT INTO stg.api_restaurants (object_id, object_value)
-                VALUES (%s, %s)
-                ON CONFLICT (object_id) DO NOTHING;  
-                """,
-                (object_id, object_value)
-            )
-        
-        conn.commit()  
-        offset += 50 
-
-    cursor.close()
-    conn.close()
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        log.error(f'Ошибка {response.status_code}: {response.text}')
+        return []
 
 def load_api_deliveries(**kwargs):
-    target_conn_id = 'PG_WAREHOUSE_CONNECTION'
-    pg_conn = BaseHook.get_connection(target_conn_id)
-
-    conn = psycopg2.connect(
-        host=pg_conn.host,
-        port=pg_conn.port,
-        database=pg_conn.schema,
-        user=pg_conn.login,
-        password=pg_conn.password
-    )
-    cursor = conn.cursor()
-
     from_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
 
-    def get_deliveries(from_date, sort_field='_id', sort_direction='asc', limit=50, offset=50):
-        url = f'{API_BASE_URL}/deliveries'
-        
-        params = {
-            'from': from_date,
-            'sort_field': sort_field,
-            'sort_direction': sort_direction,
-            'limit': limit,
-            'offset': offset
-        }
+    with get_postgres_connection('PG_WAREHOUSE_CONNECTION') as conn:
+        with conn.cursor() as cursor:
+            offset = 0
+            while True:
+                deliveries = get_deliveries(from_date=from_date, limit=50, offset=offset)
+                if not deliveries:
+                    break
+                
+                for item in deliveries:
+                    order_id = item['delivery_id']
+                    delivery_data = json.dumps(item, ensure_ascii=False)
+                    
+                    cursor.execute(
+                        """
+                        INSERT INTO stg.api_delivers (object_id, object_value)
+                        VALUES (%s, %s)
+                        ON CONFLICT (object_id) DO NOTHING;
+                        """,
+                        (order_id, delivery_data)
+                    )
+                conn.commit()
+                offset += 50
 
-        headers = {
-            'X-Nickname': NICKNAME,
-            'X-Cohort': COHORT_NUMBER,
-            'X-API-KEY': API_KEY,
-        }
-
-        response = requests.get(url, headers=headers, params=params)
-
-        if response.status_code == 200:
-            return response.json()  
-        else:
-            logging.error(f'Ошибка {response.status_code}: {response.text}')
-            return []
-
-    offset = 50
-    while True:
-        deliveries = get_deliveries(from_date=from_date, limit=50, offset=offset)
-        if not deliveries:
-            break  
-        
-        for item in deliveries:
-            order_id = item['delivery_id']
-            delivery_data = json.dumps(item, ensure_ascii=False)
-            
-            cursor.execute(
-                """
-                INSERT INTO stg.api_delivers (object_id, object_value)
-                VALUES (%s, %s)
-                ON CONFLICT (object_id) DO NOTHING;  
-                """,
-                (order_id, delivery_data)
-            )
-        
-        conn.commit()  
-        offset += 50  
-
-    cursor.close()
-    conn.close()
 dag = DAG(
     dag_id='gg',
     schedule_interval='0/15 * * * *',
